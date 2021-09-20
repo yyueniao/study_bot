@@ -6,8 +6,8 @@ import os
 import datetime
 
 
-TOKEN = 'ODg5NTIxOTc0NDY3MDAyMzY4.YUid5Q.XkEx5992kyNzLtbliR2Ej8VoRPs'
-POSTGRES_URI = 'postgres://svfkipigmcpdgo:e7b721a299bb42ab3b62dc5fa46ddcc902b656dc7994b166457278a5e8682f21@ec2-34-202-115-62.compute-1.amazonaws.com:5432/d1ht28a1cbhidu'
+TOKEN = os.environ['TOKEN']
+POSTGRES_URI = os.environ['POSTGRES_URI']
 bot = commands.Bot(command_prefix='-s', intents=discord.Intents.all())
 end_time = {}
 
