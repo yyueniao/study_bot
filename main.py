@@ -1,21 +1,23 @@
-import keep_alive
 import discord
 from discord.ext import commands
+import asyncpg
 import asyncio
 import os
-from replit import db
 import datetime
 
 
 TOKEN = os.environ['TOKEN']
-bot = commands.Bot(command_prefix='-')
+POSTGRES_URI = os.environ['POSTGRES_URI']
+bot = commands.Bot(command_prefix='-s', intents=discord.Intents.all())
 end_time = {}
+
+pool = None
 
 
 @bot.event
 async def on_ready():
-    print(">>机器人已到场<<")
-
+    global pool
+    pool = await asyncpg.create_pool(POSTGRES_URI, ssl='require')
 
 @bot.command()
 async def pom(ctx, time=None):
@@ -41,75 +43,63 @@ async def pom(ctx, time=None):
 @bot.command()
 async def status(ctx):
     if not ctx.message.author.id in end_time:
-      await ctx.send(f"{ctx.message.author.name}，您目前没有学习任务，现在马上开始学习吧！")
+        await ctx.send(f"{ctx.message.author.name}，您目前没有学习任务，现在马上开始学习吧！")
     else:
-      time_remain = (end_time[ctx.message.author.id] - datetime.datetime.now()).seconds
-      title = "任务进度"
-      description = f"你正在学习任务中，这次任务还有{round(time_remain/60)}分钟就完成了，别放弃！"
-      embed = discord.Embed(title=title, description=description)
-      await ctx.send(embed=embed)
+        time_remain = (end_time[ctx.message.author.id] - datetime.datetime.now()).seconds
+        title = "任务进度"
+        description = f"你正在学习任务中，这次任务还有{round(time_remain/60)}分钟就完成了，别放弃！"
+        embed = discord.Embed(title=title, description=description)
+        await ctx.send(embed=embed)
 
 
 async def end(ctx, user, time):
     title = f"{user.name}完成学习了！休息一会吧~"
     description = f"你已经完成了{time}分钟的学习！"
-    embed = discord.Embed(title=title, description=description)
-    if not str(user.id) in db.keys():
-      db[str(user.id)] = "0"
-      db["number"] = str(int(db["number"])+1)
-      db["rank"+db["number"]] = str(user.id)
-      db[f"rank_of_{str(user.id)}"] = db["number"]
-    db[str(user.id)] = str(int(db[str(user.id)]) + time)
-    exp = int(db[str(user.id)])
-    i = int(db[f"rank_of_{str(user.id)}"]) - 1
 
-    while i > 0:
-      rank_i = db[f"rank{str(i)}"]
-      if int(db[rank_i]) < exp:
-        db[f"rank{str(i+1)}"] = rank_i
-        db[f"rank_of_{rank_i}"] = str(i+1)
-      else:
-        break
-    db[f"rank{str(i+1)}"] = str(user.id)
-    db[f"rank_of_{str(user.id)}"] = str(i+1)
-    del end_time[user.id]
+    embed = discord.Embed(title=title, description=description)
+
+    async with pool.acquire() as conn:
+        record = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user.id)
+        if not record:
+            await conn.execute("INSERT INTO users (id, name) VALUES ($1, $2)", user.id, user.nick)   
+            record = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user.id)
+        
+        await conn.execute("UPDATE users SET time = $1", record['time'] + time)
+
     await ctx.send(f"{user.mention}")
     await ctx.send(embed=embed)
 
 
 @bot.command()
 async def reset(ctx):
-  keys = db.keys()
-  for key in keys:
-    del db[key]
-  db["number"] = "0"
+    async with pool.acquire() as conn:
+        await conn.execute("TRUNCATE TABLE users")
 
 
 @bot.command()
 async def rank(ctx):
-  user = ctx.message.author
-  rank = db[f"rank_of_{str(user.id)}"]
-  embed = discord.Embed(title = "排名", description=f"{user.mention}: 第{rank}名")
-  await ctx.send(embed=embed)
+    async with pool.acquire() as conn:
+        record = await conn.fetchrow('SELECT *, RANK() OVER ( ORDER BY time ) rank FROM users WHERE id = $1', ctx.author.id)
+        rank = record['rank']
+
+    await ctx.send(embed=discord.Embed(description=f"你是第{rank}名！"))
 
 
 @bot.command()
 async def leaderboard(ctx):
-  number = int(db["number"])
-  if number > 10:
-    number = 10
-  title = "学习排行榜"
-  description = ""
-  for i in range(number):
-    description += f"{i+1}. "
-    user_id = db["rank"+str(i+1)]
-    exp = db[user_id]
-    description += f"<@{user_id}>: {exp}分钟\n"
-  embed = discord.Embed(title=title, description=description)
-  await ctx.send(embed=embed)
+    lines = []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch('SELECT *, RANK() OVER ( ORDER BY time DESC ) rank FROM users')
+        for index, record in enumerate(rows):
+            name = record['name']
+            time = datetime.timedelta(seconds=record['time'])
+            lines.append(f"{index + 1} {name}: {time}")
 
+    description = "\n".join(lines)
+
+    await ctx.send(embed=discord.Embed(title="学习排行榜", description=description)) 
+            
 
 
 if __name__ == "__main__":
-  keep_alive.keep_alive()
-  bot.run(TOKEN)
+    bot.run(TOKEN)
